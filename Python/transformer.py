@@ -45,8 +45,10 @@ def vocab_to_idx(list_of_words):
 
 #%%
 batch_size = 12
+batch_count = 4
 vocab_size = len(vocab_dict)
-emb_dim= 16
+emb_dim= 32
+head_size = 16
 src_inputs = src[:-1]
 src_targets = src[1:]
 
@@ -62,7 +64,7 @@ def get_batches(batches_count):
 
     return inputs_batch, targets_batch
 
-inputs, targets = get_batches(4)
+inputs, targets = get_batches(batch_count)
 inputs = torch._cast_Int(inputs)
 targets = torch._cast_Int(targets)
 
@@ -76,9 +78,18 @@ for inp, tar in zip(inputs, targets):
         n+= 1
 
 # %%
-emb_table = torch.nn.Embedding(num_embeddings=vocab_size,embedding_dim=emb_dim, padding_idx=0)
-inp_emb = emb_table(inputs)
-inp_emb = emb_table(targets)
+emb_table_output = torch.nn.Embedding(num_embeddings=vocab_size,embedding_dim=emb_dim, padding_idx=0)
+logits_x = emb_table_output(inputs)
+tok_emb = torch.nn.Embedding(num_embeddings=vocab_size,embedding_dim=emb_dim, padding_idx=0)
+pos_emb = torch.nn.Embedding(num_embeddings=vocab_size,embedding_dim=emb_dim, padding_idx=0)
+B, T, C = logits_x.shape 
+x_tok= tok_emb(inputs)
+cols = torch.arange(0, batch_count, 1).unsqueeze(1)
+rows = torch.arange(0, batch_size, 1).unsqueeze(0)
+pos = cols + rows
+x_pos= pos_emb(pos)
+
+x = x_tok + x_pos
 
 
 # %%
