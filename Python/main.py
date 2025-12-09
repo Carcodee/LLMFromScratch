@@ -21,6 +21,7 @@ class Layer:
         self.weight_gradients = torch.rand(neuron_count, layer_minus_one_size)
         self.bias_gradients = torch.zeros(neuron_count, 1)
         self.activation_type= activation_type
+        self.delta_derviatives = None
 
     def forward(self, neurons_in):
         z = self.weights @ neurons_in + self.bias
@@ -33,6 +34,10 @@ class Layer:
         return self.neurons
 
     def get_derivative(activation_type): 
+        pass
+
+    def compute_current_deltas(self, old_deltas):
+        
         pass
 
 class Perceptron():
@@ -60,6 +65,9 @@ class Perceptron():
             layer_input = layer.neurons
             
         self.output_err = torch.sum((self.input_y - self.layers[-1].neurons) ** 2)
+    
+    def bawards(self):
+
 
     def load_perceptron(self):
         pass
