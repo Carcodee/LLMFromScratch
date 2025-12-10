@@ -46,7 +46,11 @@ def encode(list_of_words):
 
 
 #%%
+<<<<<<< HEAD
 batch_size = 200
+=======
+batch_size = 6 
+>>>>>>> 52053a2af4ab43abbadbaa1dd62feb372578cded
 batch_count = 4
 vocab_size = len(vocab_dict)
 emb_dim= 32
@@ -98,6 +102,7 @@ class Transformer(nn.Module):
             logits = logits.view(B*T, C)    
             target = target.view(B*T)
             loss = F.cross_entropy(logits, target)
+<<<<<<< HEAD
 
         return logits, loss 
 #%%
@@ -129,6 +134,30 @@ def generate(input, max_context_lenght):
 
 input_chain = torch.tensor([[0]])
 generate(input_chain, batch_size)
+=======
+
+        return logits, loss 
+# %%
+
+cTransformer = Transformer()
+optimizer = torch.optim.Adam(cTransformer.parameters(), lr=1e-3)
+targets = targets.long()
+
+for epoch in range(200):
+    optimizer.zero_grad(set_to_none = True)
+    y, loss = cTransformer(inputs, targets)
+    print(loss)
+    loss.backward()
+    optimizer.step()
+
+input_chain = torch.tensor([[0]])
+next_tok, loss = cTransformer(input_chain)
+print(F.softmax(next_tok, dim = 2).max())
+
+>>>>>>> 52053a2af4ab43abbadbaa1dd62feb372578cded
 
 
 # %%
+def generate(input, context_lenght):
+
+    pass
