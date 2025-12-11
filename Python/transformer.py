@@ -249,17 +249,18 @@ cTransformer.to(device)
 #%%
 def generate(input, max_size):
     generated_text = ''
-    seq = torch.tensor([], dtype = torch.long).to(device)
-    seq = torch.cat((seq, input.squeeze()), dim=0)
     for n in range(max_size):
-        input = input[:,-context_lenght:] 
-        new_logits, _ = cTransformer(input)
+        model_in = input[:,-context_lenght:] 
+
+        new_logits, _ = cTransformer(model_in)
         last_tok_logits = new_logits[:, -1, :]
         probs = F.softmax(last_tok_logits, dim=-1)
         next_tok = torch.multinomial(probs, num_samples=1)  
-        input = torch.cat((input, next_tok), dim=1)
-        seq = torch.cat((seq, input.squeeze()[input.shape[1]-1:]), dim=0)
-    generated_text = ''.join(decode(seq.tolist()))
+
+        input = torch.cat((model_in, next_tok), dim=1)
+
+        print(generated_text)
+    generated_text = ''.join(decode(input[0].tolist()))
     print(generated_text)
     with open('output_file.txt', 'w', encoding='utf-8') as f:
         f.write(generated_text)
@@ -269,7 +270,7 @@ def Prompt(text):
     text = f"<user>{text}</user>"
     toks = encode(text)
     tokens = torch.tensor([toks.ids]).to(device)
-    generate(tokens, 10000)
+    generate(tokens, 200)
 
 #%%
 state = torch.load('model.pth', map_location='cuda')

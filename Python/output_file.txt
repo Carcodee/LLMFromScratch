@@ -1,7 +1,11 @@
 <user>how are you doing?</user>
-<bot>i'm fine. how much isn't hear anything about anything.</bot>
-<user>i'm really tired.</user>
-<bot>have a nice monthes.</bot>
-<user>thatally?</user>
-<bot>yes, but i get a nice.</bot>
-<user>yes, but that should have. without
+<bot>i'm fine. how much isn't hp.</bot>
+<user>i'm fine. how much did they're happy for you have a party.</user>
+<bot>i really have a nice to do that you given out to thinking tomorrow.</bot>
+<user>i'm just bought have to thinking about what the new girl?</user>
+<bot>so you have seen her around?</bot>
+<user>so you have seen her around?</user>
+<bot>yes, i have.</bot>
+<user>there's a new girl in school, have you seen her yet?</user>
+<bot>i haven't seen her yet.</bot>
+<user>i haven't
