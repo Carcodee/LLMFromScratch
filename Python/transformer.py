@@ -205,6 +205,7 @@ class Transformer(nn.Module):
 cTransformer = Transformer().to(device=device)
 optimizer = torch.optim.Adam(cTransformer.parameters(), lr=lr)
 
+'''
 #%%
 cTransformer.load_state_dict(torch.load('checkpoint.pth'))
 
@@ -232,7 +233,6 @@ epoch_counter = 0
 Train(5000, src_train, src_test)
 epoch_counter+= 500
 
-
 #%%
 Train(2500, src_post_train, src_post_test)
 epoch_counter+= 1000
@@ -246,38 +246,49 @@ torch.save({'model': cTransformer.state_dict(),
 torch.save(cTransformer.cpu().state_dict(), 'model.pth')
 cTransformer.to(device)
 
+'''
 #%%
-def generate(input, max_size):
-    generated_text = ''
-    for n in range(max_size):
-        model_in = input[:,-context_lenght:] 
+def generate(prompt_tokens, max_size):
+    seq = prompt_tokens.clone()   # full growing sequence
+    generated_text = ""
 
-        new_logits, _ = cTransformer(model_in)
-        last_tok_logits = new_logits[:, -1, :]
-        probs = F.softmax(last_tok_logits, dim=-1)
-        next_tok = torch.multinomial(probs, num_samples=1)  
+    for _ in range(max_size):
 
-        input = torch.cat((model_in, next_tok), dim=1)
+        model_in = seq[:, -context_lenght:]
 
-        print(generated_text)
-    generated_text = ''.join(decode(input[0].tolist()))
-    print(generated_text)
-    with open('output_file.txt', 'w', encoding='utf-8') as f:
+        logits, _ = cTransformer(model_in)
+        last_logits = logits[:, -1, :]
+        probs = F.softmax(last_logits, dim=-1)
+
+        next_tok = torch.multinomial(probs, 1)
+        seq = torch.cat((seq, next_tok), dim=1)
+
+        recent = decode(seq[0, -20:].tolist())
+        generated_text = decode(seq[0].tolist())
+
+        if "</bot>" in recent:
+            break
+
+    with open("output_file.txt", "w", encoding="utf-8") as f:
         f.write(generated_text)
 
-
+    return generated_text
 def Prompt(text):
     text = f"<user>{text}</user>"
     toks = encode(text)
     tokens = torch.tensor([toks.ids]).to(device)
-    generate(tokens, 200)
+    return generate(tokens, 200)
 
 #%%
 state = torch.load('model.pth', map_location='cuda')
 cTransformer.load_state_dict(state)
 cTransformer.eval()
 #%%
-Prompt('how are you doing?')
+while True:
+    text = input('> ')
+    output = Prompt(text)
+    print(output)
+
 
 
 # %%
