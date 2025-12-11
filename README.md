@@ -1,5 +1,5 @@
 # LLMFromScratch
-Implementation of modern LLM architecture from scratch using Andrej Karpathy tutorial
+Implementation of modern LLM architecture from scratch
 
 A simple yet fully functional autoregressive Transformer language model built entirely in PyTorch, trained on dialog-style and Shakespeare-style text.
 This project demonstrates the full pipeline for building a small LLM: dataset preparation, tokenizer training, Transformer implementation, training loop, and text generation with prompt conditioning.
