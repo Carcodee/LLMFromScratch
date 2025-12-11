@@ -12,7 +12,7 @@ import math
 # %%
 
 df = pd.read_csv('data.csv')
-df = df.drop(["Dataline","PlayerLinenumber","Play","ActSceneLine"], axis=1)
+df = df.drop(['Dataline','PlayerLinenumber','Play','ActSceneLine'], axis=1)
 df[['Player', 'PlayerLine']] += '\n'
 str_list = df.values.flatten().tolist()[:10000]
 str_list = [x for x in str_list if not (isinstance(x, float) and math.isnan(x))]
@@ -21,65 +21,93 @@ with open('final_training_data.txt', 'w', encoding='utf-8') as f:
     f.write(final_string)
 
 # %%
-#naive tokenizer
-text_clean = re.split(r"(\s+)", final_string)
-vocab = sorted(set(text_clean))
-vocab_dict = {tok: idx for idx, tok in enumerate(vocab)}
-vocab_dict_inv = {idx: tok for idx, tok in enumerate(vocab)}
-src = torch.tensor([vocab_dict[x] for x in text_clean])
-print(src)
+df_conversations = pd.read_csv('Conversation.csv')
+df_conversations = df_conversations.drop(['Unnamed: 0'], axis=1)
+df_conversations['question'] = ('<user>') + df_conversations['question'] + ('</user>\n')
+df_conversations['answer'] = ('<bot>') + df_conversations['answer'] + ('</bot>\n')
+conv_list = df_conversations.values.flatten().tolist()
+conv_list = [x for x in conv_list if not (isinstance(x, float) and math.isnan(x))]
+conv_list_str = ''.join(conv_list)
+with open('final_post_training_data.txt','w', encoding='utf-8') as f:
+    f.write(conv_list_str)
+
+print(conv_list)
 
 # %%
 '''
+#naive tokenizer
+text_clean = re.split(r'(\s+)', final_string)
+text_clean_conv = re.split(r'(\s+)', conv_list_str)
+vocab = sorted(set(text_clean + text_clean_conv))
+vocab_dict = {tok: idx for idx, tok in enumerate(vocab)}
+vocab_dict_inv = {idx: tok for idx, tok in enumerate(vocab)}
+src = torch.tensor([vocab_dict[x] for x in text_clean])
+src_post = torch.tensor([vocab_dict[x] for x in text_clean_conv])
+'''
+
+# %%
+torch.manual_seed(329846)
+device =  'cuda' if torch.cuda.is_available() else 'cpu'
+
 #later on I will use this
 tokenizer = ByteLevelBPETokenizer()
 tokenizer.train(files= 'final_training_data.txt',vocab_size=32000)
-src = tokenizer.encode(final_string)
-print(src.ids)
-'''
+encoded_src = tokenizer.encode(final_string)
+encoded_src_post = tokenizer.encode(conv_list_str)
+
+
+# %%
+src = torch.tensor(encoded_src.ids, device=device)
+src_post = torch.tensor(encoded_src_post.ids, device=device)
+
+train_size = int(src.shape[0] * 0.9)
+src_train = src[:train_size]
+src_test = src[train_size:]
+
+src_post_train = src_post[:train_size]
+src_post_test = src_post[train_size:]
+# %%
 
 def decode(list_of_idxs):
-    list_of_words = [vocab_dict_inv[x] for x in list_of_idxs]
-    return list_of_words
+#    list_of_words = [vocab_dict_inv[x] for x in list_of_idxs]
+    text = tokenizer.decode(list_of_idxs)
+    return text
 
 def encode(list_of_words):
-    list_of_idxs = [vocab_dict[x] for x in list_of_words]
-    return list_of_idxs
+#    list_of_idxs = [vocab_dict[x] for x in list_of_words]
+    toks = tokenizer.encode(list_of_words)
+    return toks
 
 
 #%%
-torch.manual_seed(329846)
-device =  "cuda" if torch.cuda.is_available() else "cpu"
-context_lenght = 1000
+context_lenght = 256 
+pos_emb_lenght = 2048
 batch_count = 4 
 lr = 1e-3
-vocab_size = len(vocab_dict)
+vocab_size = tokenizer.get_vocab_size()
 emb_dim= 512
 head_count = 8 
 feed_forward = emb_dim * 4
-src_inputs = src[:-1]
-src_targets = src[1:]
 
 #%%
-def get_batches(batches_count):
-    all_starts= torch.randint(0, src.shape[0] - context_lenght - 1, size=(batches_count, ))
-    inputs = torch.stack([src_inputs[n : n + context_lenght] for n in all_starts])
-    targets = torch.stack([src_inputs[n + 1: n + context_lenght + 1] for n in all_starts])
+def get_batches(batches_count, src_data):
+    all_starts= torch.randint(0, src_data.shape[0] - context_lenght - 1, size=(batches_count, ))
+    inputs = torch.stack([src_data[n : n + context_lenght] for n in all_starts])
+    targets = torch.stack([src_data[n + 1: n + context_lenght + 1] for n in all_starts])
 
     return inputs, targets
 
-inputs, targets = get_batches(batch_count)
+#%%
+
+inputs, targets = get_batches(batch_count, src)
 
 inputs = inputs.long().to(device)
 targets = targets.long().to(device)
-
-#%%
 for inp, tar in zip(inputs, targets):
     n = 0
     while n < inp.shape[0]:
-        print(inp.shape)
-        print(f"For inputs: {decode(inp[:n + 1].tolist())}")
-        print(f"target is:  {decode(tar[n:n+1].tolist())}")
+        print(f'For inputs: {decode(inp[:n + 1].tolist())}')
+        print(f'target is:  {decode(tar[n:n+1].tolist())}')
         n+= 1
 
 #%%
@@ -94,7 +122,7 @@ class Head(nn.Module):
         B, T, C  = x.shape
         Q = self.to_q(x) #(B, T, head_size)
         K = self.to_k(x)
-        V = self.to_q(x)
+        V = self.to_v(x)
         
         #B, T, C @ B, C, T = B, T, T
         wei = Q @ torch.transpose(K, dim0=-2, dim1=-1)/self.head_emb_size**0.5
@@ -147,7 +175,7 @@ class Transformer(nn.Module):
     def __init__(self):
         super().__init__()
         self.tok_emb = nn.Embedding(num_embeddings=vocab_size,embedding_dim=emb_dim, padding_idx=0)
-        self.pos_emb = nn.Embedding(num_embeddings=context_lenght,embedding_dim=emb_dim, padding_idx=0)
+        self.pos_emb = nn.Embedding(num_embeddings=pos_emb_lenght,embedding_dim=emb_dim, padding_idx=0)
         self.model_pipeline = nn.Sequential(
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
@@ -178,29 +206,35 @@ cTransformer = Transformer().to(device=device)
 optimizer = torch.optim.Adam(cTransformer.parameters(), lr=lr)
 
 #%%
-for n in range(10000):
-    optimizer.zero_grad(set_to_none = True)
-    train_x, train_y = get_batches(batch_count)
-    train_x = train_x.long().to(device)
-    train_y = train_y.long().to(device)
-    y, loss = cTransformer(train_x, train_y)
-    loss.backward()
-    optimizer.step()
-    if n % 50 == 0:
-        with torch.no_grad():
-            test_x, test_y = get_batches(batch_count)
-            test_x = test_x.long().to(device)
-            test_y = test_y.long().to(device)
-            _, loss_test = cTransformer(test_x, test_y)
-            print(f"train: {n}: {loss}, test: {n}: {loss_test}")
+def Train(epochs, src_data_train, src_data_test):
+    for n in range(epochs):
+        optimizer.zero_grad(set_to_none = True)
+        train_x, train_y = get_batches(batch_count, src_data_train)
+        train_x = train_x.long().to(device)
+        train_y = train_y.long().to(device)
+        y, loss = cTransformer(train_x, train_y)
+        loss.backward()
+        optimizer.step()
+        if n % 50 == 0:
+            with torch.no_grad():
+                test_x, test_y = get_batches(batch_count, src_data_test)
+                test_x = test_x.long().to(device)
+                test_y = test_y.long().to(device)
+                _, loss_test = cTransformer(test_x, test_y)
+                print(f'train: {n}: {loss}, test: {n}: {loss_test}')
 
 
+#%%
 
+Train(500, src_train, src_test)
+
+
+#%%
+Train(1000, src_post_train, src_post_test)
 #%%
 def generate(input, max_size):
     generated_text = ''
     seq = torch.zeros([max_size], dtype = torch.long).to(device)
-    seq[0] = input[0]
     for n in range(max_size):
         input = input[:,-context_lenght:] 
         new_logits, _ = cTransformer(input)
@@ -208,14 +242,20 @@ def generate(input, max_size):
         probs = F.softmax(last_tok_logits, dim=-1)
         next_tok = torch.multinomial(probs, num_samples=1)  
         input = torch.cat((input, next_tok), dim=1)
-    generated_text = ''.join(decode(input.tolist()))
+    generated_text = ''.join(decode(input[0].tolist()))
+    print(generated_text)
     with open('output_file.txt', 'w', encoding='utf-8') as f:
         f.write(generated_text)
 
 
-input_chain = torch.tensor([[0]]).to(device)
-generate(input_chain, 1000)
+def Prompt(text):
+    text = f"<user>{text}</user>"
+    toks = encode(text)
+    tokens = torch.tensor([toks.ids]).to(device)
+    generate(tokens, 100)
 
-# %%
+#%%
+Prompt('how are you doing?')
+
 
 # %%
