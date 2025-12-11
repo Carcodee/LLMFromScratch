@@ -206,6 +206,9 @@ cTransformer = Transformer().to(device=device)
 optimizer = torch.optim.Adam(cTransformer.parameters(), lr=lr)
 
 #%%
+cTransformer.load_state_dict(torch.load('checkpoint.pth'))
+
+#%%
 def Train(epochs, src_data_train, src_data_test):
     for n in range(epochs):
         optimizer.zero_grad(set_to_none = True)
@@ -225,16 +228,29 @@ def Train(epochs, src_data_train, src_data_test):
 
 
 #%%
-
-Train(500, src_train, src_test)
+epoch_counter = 0
+Train(5000, src_train, src_test)
+epoch_counter+= 500
 
 
 #%%
-Train(1000, src_post_train, src_post_test)
+Train(2500, src_post_train, src_post_test)
+epoch_counter+= 1000
+
+torch.save({'model': cTransformer.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch_counter},
+            'checkpoint.pth')
+
+#%%
+torch.save(cTransformer.cpu().state_dict(), 'model.pth')
+cTransformer.to(device)
+
 #%%
 def generate(input, max_size):
     generated_text = ''
-    seq = torch.zeros([max_size], dtype = torch.long).to(device)
+    seq = torch.tensor([], dtype = torch.long).to(device)
+    seq = torch.cat((seq, input.squeeze()), dim=0)
     for n in range(max_size):
         input = input[:,-context_lenght:] 
         new_logits, _ = cTransformer(input)
@@ -242,7 +258,8 @@ def generate(input, max_size):
         probs = F.softmax(last_tok_logits, dim=-1)
         next_tok = torch.multinomial(probs, num_samples=1)  
         input = torch.cat((input, next_tok), dim=1)
-    generated_text = ''.join(decode(input[0].tolist()))
+        seq = torch.cat((seq, input.squeeze()[input.shape[1]-1:]), dim=0)
+    generated_text = ''.join(decode(seq.tolist()))
     print(generated_text)
     with open('output_file.txt', 'w', encoding='utf-8') as f:
         f.write(generated_text)
@@ -252,8 +269,12 @@ def Prompt(text):
     text = f"<user>{text}</user>"
     toks = encode(text)
     tokens = torch.tensor([toks.ids]).to(device)
-    generate(tokens, 100)
+    generate(tokens, 10000)
 
+#%%
+state = torch.load('model.pth', map_location='cuda')
+cTransformer.load_state_dict(state)
+cTransformer.eval()
 #%%
 Prompt('how are you doing?')
 
