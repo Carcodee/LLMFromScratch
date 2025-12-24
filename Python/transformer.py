@@ -11,24 +11,24 @@ import math
 
 # %%
 
-df = pd.read_csv('data.csv')
+df = pd.read_csv('text_data/data.csv')
 df = df.drop(['Dataline','PlayerLinenumber','Play','ActSceneLine'], axis=1)
 df[['Player', 'PlayerLine']] += '\n'
 str_list = df.values.flatten().tolist()[:10000]
 str_list = [x for x in str_list if not (isinstance(x, float) and math.isnan(x))]
 final_string = ''.join(str_list)
-with open('final_training_data.txt', 'w', encoding='utf-8') as f:
+with open('text_data/final_training_data.txt', 'w', encoding='utf-8') as f:
     f.write(final_string)
 
 # %%
-df_conversations = pd.read_csv('Conversation.csv')
+df_conversations = pd.read_csv('text_data/Conversation.csv')
 df_conversations = df_conversations.drop(['Unnamed: 0'], axis=1)
 df_conversations['question'] = ('<user>') + df_conversations['question'] + ('</user>\n')
 df_conversations['answer'] = ('<bot>') + df_conversations['answer'] + ('</bot>\n')
 conv_list = df_conversations.values.flatten().tolist()
 conv_list = [x for x in conv_list if not (isinstance(x, float) and math.isnan(x))]
 conv_list_str = ''.join(conv_list)
-with open('final_post_training_data.txt','w', encoding='utf-8') as f:
+with open('text_data/final_post_training_data.txt','w', encoding='utf-8') as f:
     f.write(conv_list_str)
 
 print(conv_list)
