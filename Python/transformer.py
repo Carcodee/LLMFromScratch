@@ -8,30 +8,32 @@ from tokenizers.models import BPE
 from tokenizers import ByteLevelBPETokenizer
 import re
 import math
+import matplotlib.pyplot as plt
 
 # %%
 
-df = pd.read_csv('text_data/data.csv')
+df = pd.read_csv('./text_data/data.csv')
 df = df.drop(['Dataline','PlayerLinenumber','Play','ActSceneLine'], axis=1)
 df[['Player', 'PlayerLine']] += '\n'
 str_list = df.values.flatten().tolist()[:10000]
 str_list = [x for x in str_list if not (isinstance(x, float) and math.isnan(x))]
 final_string = ''.join(str_list)
-with open('text_data/final_training_data.txt', 'w', encoding='utf-8') as f:
+with open('./text_data/final_training_data.txt', 'w', encoding='utf-8') as f:
     f.write(final_string)
 
 # %%
-df_conversations = pd.read_csv('text_data/Conversation.csv')
-df_conversations = df_conversations.drop(['Unnamed: 0'], axis=1)
-df_conversations['question'] = ('<user>') + df_conversations['question'] + ('</user>\n')
-df_conversations['answer'] = ('<bot>') + df_conversations['answer'] + ('</bot>\n')
-conv_list = df_conversations.values.flatten().tolist()
-conv_list = [x for x in conv_list if not (isinstance(x, float) and math.isnan(x))]
-conv_list_str = ''.join(conv_list)
-with open('text_data/final_post_training_data.txt','w', encoding='utf-8') as f:
-    f.write(conv_list_str)
+df_conversations = pd.read_csv('./text_data/chat_bot_conv.csv', nrows=100000)
+df_conversations = df_conversations.drop(['conversation_id', 'turn', 'intent'], axis=1)
+df_conversations_new = '<' + df_conversations['role'] + '>' +  df_conversations['message'] + '</' + df_conversations['role'] + '>\n'
+conv_list = df_conversations_new.values.flatten().tolist()
 
-print(conv_list)
+#%%
+conv_list_str = ''.join(conv_list)
+#%%
+with open('./text_data/final_post_training_data.txt','w', encoding='utf-8') as f:
+    f.write(conv_list_str)
+#%%
+
 
 # %%
 '''
@@ -51,7 +53,7 @@ device =  'cuda' if torch.cuda.is_available() else 'cpu'
 
 #later on I will use this
 tokenizer = ByteLevelBPETokenizer()
-tokenizer.train(files= 'final_training_data.txt',vocab_size=32000)
+tokenizer.train(files= './text_data/final_post_training_data.txt',vocab_size=32000)
 encoded_src = tokenizer.encode(final_string)
 encoded_src_post = tokenizer.encode(conv_list_str)
 
@@ -80,22 +82,31 @@ def encode(list_of_words):
 
 
 #%%
-context_lenght = 256 
+context_lenght = 32 
 pos_emb_lenght = 2048
-batch_count = 4 
+batch_count = 128 
 lr = 1e-3
 vocab_size = tokenizer.get_vocab_size()
 emb_dim= 512
 head_count = 8 
 feed_forward = emb_dim * 4
+temperature = 1.8
 
 #%%
 def get_batches(batches_count, src_data):
     all_starts= torch.randint(0, src_data.shape[0] - context_lenght - 1, size=(batches_count, ))
     inputs = torch.stack([src_data[n : n + context_lenght] for n in all_starts])
     targets = torch.stack([src_data[n + 1: n + context_lenght + 1] for n in all_starts])
-
     return inputs, targets
+
+def get_minibatch(batches, start, end):
+    return batches[start:end, :, ]
+
+def get_minibatch_pair(batches_x, batches_y, start, end):
+    x = get_minibatch(batches_x, start, end)
+    y = get_minibatch(batches_y, start, end)
+    return x, y 
+
 
 #%%
 
@@ -118,6 +129,7 @@ class Head(nn.Module):
         self.to_q = nn.Linear(input_size, head_emb_size)
         self.to_k = nn.Linear(input_size, head_emb_size)
         self.to_v = nn.Linear(input_size, head_emb_size)
+        self.register_buffer("mask", torch.tril(torch.ones(context_lenght, context_lenght)))
     def forward(self, x):
         B, T, C  = x.shape
         Q = self.to_q(x) #(B, T, head_size)
@@ -126,9 +138,10 @@ class Head(nn.Module):
         
         #B, T, C @ B, C, T = B, T, T
         wei = Q @ torch.transpose(K, dim0=-2, dim1=-1)/self.head_emb_size**0.5
-        mask = torch.tril(torch.ones(T, T, device=device))
+        mask = self.mask[:T, :T]
         wei = wei.masked_fill(mask==0, float(-1e9))
         wei = F.softmax(wei, dim=2)
+        wei = F.dropout(wei, p=0.4, training=self.training)
         #B, T, T @ B, T, C = B, T, C
         out = wei @ V
         return out
@@ -142,7 +155,7 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=2)
-        out = self.proj(out)
+        out = F.dropout(self.proj(out), p=0.4, training=self.training)
         return out
 
 
@@ -152,7 +165,9 @@ class FeedForward(nn.Module):
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.4),
             nn.Linear(hidden_size, input_size),
+            nn.Dropout(0.4),
         )
     #feedforward + residual connection
     def forward(self, x):
@@ -165,8 +180,9 @@ class Block(nn.Module):
         self.mhatt = MultiHeadAttention(head_count, emb_dim)
         self.lyn2 = nn.LayerNorm(emb_dim)
         self.ff = FeedForward(emb_dim, feed_forward)
+        self.dropout = nn.Dropout(0.4)
     def forward(self, x):
-        x = x + self.mhatt(self.lyn1(x))
+        x = x + self.dropout(self.mhatt(self.lyn1(x)))
         x = x + self.ff(self.lyn2(x))
         return x
 
@@ -184,12 +200,14 @@ class Transformer(nn.Module):
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
         )
+        self.ln_f = nn.LayerNorm(emb_dim)
         self.lm_head = nn.Linear(emb_dim, vocab_size)
     def forward(self, input, target = None):
         B, T = input.shape
         emb_tok = self.tok_emb(input).to(device)
         emb_pos = self.pos_emb(torch.arange(T, device = device)).unsqueeze(0)
         x = emb_pos + emb_tok
+        x = F.dropout(x, p=0.4, training=self.training)
         x = self.model_pipeline(x)
         logits = self.lm_head(x)
 
@@ -203,14 +221,14 @@ class Transformer(nn.Module):
         return logits, loss 
 #%%
 cTransformer = Transformer().to(device=device)
-optimizer = torch.optim.Adam(cTransformer.parameters(), lr=lr)
+optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr)
 
-'''
 #%%
-cTransformer.load_state_dict(torch.load('checkpoint.pth'))
+#cTransformer.load_state_dict(torch.load('checkpoint.pth'))
 
 #%%
 def Train(epochs, src_data_train, src_data_test):
+    losses = []
     for n in range(epochs):
         optimizer.zero_grad(set_to_none = True)
         train_x, train_y = get_batches(batch_count, src_data_train)
@@ -225,28 +243,49 @@ def Train(epochs, src_data_train, src_data_test):
                 test_x = test_x.long().to(device)
                 test_y = test_y.long().to(device)
                 _, loss_test = cTransformer(test_x, test_y)
+                losses.append((loss, loss_test))
                 print(f'train: {n}: {loss}, test: {n}: {loss_test}')
+        
+    return losses
 
 
 #%%
 epoch_counter = 0
-Train(5000, src_train, src_test)
-epoch_counter+= 500
+losses = Train(4000, src_train, src_test)
+epoch_counter+=4000 
+
+
 
 #%%
-Train(2500, src_post_train, src_post_test)
-epoch_counter+= 1000
+losses_post = Train(1000, src_post_train, src_post_test)
+epoch_counter+= 1000 
 
+#%%
 torch.save({'model': cTransformer.state_dict(),
             'optimizer': optimizer.state_dict(),
             'epoch': epoch_counter},
             'checkpoint.pth')
+#%%
+losses_train = []
+losses_val = []
+for loss in losses_post:
+    losses_train.append(loss[0].detach().cpu().item())
+    losses_val.append(loss[1].detach().cpu().item())
 
+
+print(losses_train)
+plt.figure()
+plt.plot(losses_train, label = "train loss")
+plt.plot(losses_val, label = "val loss")
+plt.xlabel("iteration")
+plt.ylabel("loss")
+plt.grid(True)
+plt.legend()
+plt.show()
 #%%
 torch.save(cTransformer.cpu().state_dict(), 'model.pth')
 cTransformer.to(device)
 
-'''
 #%%
 def generate(prompt_tokens, max_size):
     seq = prompt_tokens.clone()   # full growing sequence
@@ -258,8 +297,12 @@ def generate(prompt_tokens, max_size):
 
         logits, _ = cTransformer(model_in)
         last_logits = logits[:, -1, :]
-        probs = F.softmax(last_logits, dim=-1)
+        probs = F.softmax(last_logits/temperature, dim=-1)
+        probs_ploted = probs.detach().cpu().clone()
 
+        probs_ploted = probs_ploted.squeeze(dim=0)
+#        plt.plot(probs_ploted.tolist())
+#        plt.show()
         next_tok = torch.multinomial(probs, 1)
         seq = torch.cat((seq, next_tok), dim=1)
 
@@ -274,7 +317,7 @@ def generate(prompt_tokens, max_size):
 
     return generated_text
 def Prompt(text):
-    text = f"<user>{text}</user>"
+    text = f"{text}"
     toks = encode(text)
     tokens = torch.tensor([toks.ids]).to(device)
     return generate(tokens, 200)
@@ -284,11 +327,10 @@ state = torch.load('model.pth', map_location='cuda')
 cTransformer.load_state_dict(state)
 cTransformer.eval()
 #%%
-while True:
-    text = input('> ')
-    output = Prompt(text)
-    print(output)
 
-
+#text = input('> ')
+cTransformer.eval()
+output = Prompt("<user>can you move a car?</user>\n")
+print(output)
 
 # %%

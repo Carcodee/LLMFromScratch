@@ -14,7 +14,8 @@ target_img_size = [50, 50]
 train_size = 0.9
 channels = 1
 flatten_size = target_img_size[0] *  target_img_size[1] * channels
-latent_space_size = 500 
+latent_space_dim = 24
+latent_space_size = latent_space_dim * latent_space_dim
 
 #torch.manual_seed(329846)
 device =  'cuda' if torch.cuda.is_available() else 'cpu'
@@ -54,23 +55,29 @@ test_images_y = imgs_tensor[train_size_int:].to(device=device)
 
 
 #we assume that 0 is the batch dim
-def get_batch_random(src_x, src_y, batch_size):
+def get_batch_random(src_x, src_y, batch_size, flatten = True, channels_first_dim = True):
     batches_to_pick = torch.randint(0, src_x.shape[0], (batch_size, )).to(device=device)
-    batches_x = src_x[batches_to_pick].to(device=device)
-    batches_y = src_y[batches_to_pick].to(device=device)
-    batches_x = batches_x.reshape(batch_size, -1).to(device=device)
-    batches_y = batches_y.reshape(batch_size, -1).to(device=device)
+    batches_x = src_x[batches_to_pick].clone().to(device=device)
+    batches_y = src_y[batches_to_pick].clone().to(device=device)
+    if flatten == True:
+        batches_x = batches_x.reshape(batch_size, -1).to(device=device)
+        batches_y = batches_y.reshape(batch_size, -1).to(device=device)
+    if channels_first_dim == True:
+        batches_x =torch.transpose(batches_x, dim0= -1, dim1=1) 
     return batches_x, batches_y
 
-def get_batches(src_x, src_y, batch_size = -1):
+def get_batches(src_x, src_y, batch_size = -1, flatten = True, channels_first_dim = True):
     if batch_size == -1:
         #pick all batches
         batch_size = src_x.shape[0]
-
-    src_sliced_x = src_x[:batch_size].to(device= device)
-    src_sliced_y = src_y[:batch_size].to(device= device)
-    batches_x = src_sliced_x.reshape(batch_size, -1).to(device= device)
-    batches_y = src_sliced_y.reshape(batch_size, -1).to(device= device)
+    batches_x = src_x[:batch_size].clone().to(device= device)
+    batches_y = src_y[:batch_size].clone().to(device= device)
+    if flatten == True:
+        batches_x = batches_x.reshape(batch_size, -1).to(device= device)
+        batches_y = batches_y.reshape(batch_size, -1).to(device= device)
+    print(batches_x.shape)
+    if channels_first_dim == True:
+        batches_x =torch.transpose(batches_x, dim0= -1, dim1=1) 
     return batches_x, batches_y
 
 def get_img_from_flatten(img_batch):
@@ -86,26 +93,48 @@ def get_random_latent_img(latent_size):
 class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.model = torch.nn.Sequential(
-            torch.nn.Linear(flatten_size, latent_space_size * 2),
-            torch.nn.Sigmoid(),
-            torch.nn.LayerNorm(latent_space_size * 2),
-            torch.nn.Linear(latent_space_size * 2, latent_space_size),
-        )
+#        self.model = torch.nn.Sequential(
+#            torch.nn.Linear(flatten_size, latent_space_size * 2),
+#            torch.nn.Conv2d(1, 4, 3, 1),
+#            torch.nn.Linear(latent_space_size * 2, latent_space_size),
+#            torch.nn.ReLU(),
+#       )
+        self.conv_1 = torch.nn.Conv2d(1, 4, 4, 1)
+        self.conv_2 = torch.nn.Conv2d(4, 8, 4, 1)
+        self.conv_3 = torch.nn.Conv2d(8, 8, 4, 1)
     def forward(self, x):
-        return self.model(x)
+        x = F.relu(self.conv_1(x))
+        #4 * 47 * 47
+        x = F.max_pool2d(x, 2)
+        #4 * 23 * 23 
+        x = F.relu(self.conv_2(x))
+        #8 * 20 * 20 
+        x = F.max_pool2d(x, 2)
+        #8 * 10 * 10 
+        x = F.relu(self.conv_3(x))
+        #8 * 7 * 7 
+        x = F.max_pool2d(x, 2)
+        #8 * 3 * 3 
+        return (x)
 
 class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.model = torch.nn.Sequential(
-            torch.nn.Linear(latent_space_size, latent_space_size * 2),
-            torch.nn.Sigmoid(),
-            torch.nn.LayerNorm(latent_space_size * 2),
-            torch.nn.Linear(latent_space_size * 2, flatten_size),
-        )
+#        self.model = torch.nn.Sequential(
+#            torch.nn.Linear(latent_space_size, latent_space_size * 2),
+#            torch.nn.Linear(latent_space_size * 2, flatten_size),
+#        )
+        self.deconv_1 = torch.nn.ConvTranspose2d(8, 8, 2, 1)
+        self.deconv_2 = torch.nn.ConvTranspose2d(8, 4, 8, 1)
+        self.deconv_3 = torch.nn.ConvTranspose2d(4, 1, 32, 1)
+        self.fwd_1 = torch.nn.Linear(42 * 42, flatten_size)
     def forward(self, x):
-        return self.model(x)
+        x = self.deconv_1(x)
+        x = self.deconv_2(x)
+        x = self.deconv_3(x)
+        x = torch.flatten(x, 1)
+        x = self.fwd_1(x)
+        return x
 
 class AutoEncoder(nn.Module):
     def __init__(self, ):
@@ -122,8 +151,7 @@ class AutoEncoder(nn.Module):
             x = self.encoder(x)
             x = self.decoder(x)
             if target is not None:
-                loss = F.mse_loss(x, target)
-
+                loss = F.mse_loss(x, torch.flatten(target, 1))
         return x, loss
 
 
@@ -149,22 +177,15 @@ for name, module in auto_encoder.named_modules():
 torch.manual_seed(123465)
 for n in range(10000):
     optimizer.zero_grad(set_to_none=True)
-    batch_x, batch_y = get_batch_random(train_images_x, train_images_y, 80)
+    batch_x, batch_y = get_batch_random(train_images_x, train_images_y, 80, False)
     batch_x = batch_x.detach().clone().requires_grad_(True)
     x, loss = auto_encoder(batch_x, batch_y, 'none')
     x.retain_grad()
-    y_out = get_img_from_flatten(x)
-    y_pred = get_img_from_flatten(batch_y)
     loss.backward()
     optimizer.step()
-    if n % 5000 == 0:
-        mask = (x > 0.99) | (x < 0.01)
-        grads = x.grad * mask
-        grads_img = grads.view(100, -1).cpu()
-
     if n % 50 == 0:
         with torch.no_grad():
-            batch_x, batch_y = get_batch_random(test_images_x, test_images_y, 80)
+            batch_x, batch_y = get_batch_random(test_images_x, test_images_y, 80, False)
             x, _ = auto_encoder(batch_x, batch_y, 'none')
         print(f'epoch {n}: train loss: {loss}, validation: {_}')
     
@@ -180,14 +201,16 @@ for act_list in list_act:
         list_act_flatten.append(act)
 
 acts_tensor = torch.tensor(list_act_flatten).unsqueeze(dim=0)
-acts_tensor = acts_tensor.view(-1, 100)
+acts_tensor = acts_tensor.view(-1, 1000)
 mask = (acts_tensor > 0.99) | (acts_tensor < 0.01)
 plt.imshow(mask, cmap='gray')
 
 #%%
 with torch.no_grad():
     torch.manual_seed(123465)
-    data_point_x, data_point_y = get_batches(test_images_x, test_images_y, 10)
+    data_point_x, data_point_y = get_batches(train_images_x, train_images_y, batch_size=-1, flatten=False)
+    print(data_point_x.shape)
+    print(data_point_y.shape)
     y, _ = auto_encoder(data_point_x, None, 'none')
     y = y.cpu()
     x_in = get_img_from_flatten(data_point_x.cpu())
