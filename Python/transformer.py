@@ -9,6 +9,7 @@ from tokenizers import ByteLevelBPETokenizer
 import re
 import math
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 # %%
 
@@ -22,9 +23,17 @@ with open('./text_data/final_training_data.txt', 'w', encoding='utf-8') as f:
     f.write(final_string)
 
 # %%
-df_conversations = pd.read_csv('./text_data/chat_bot_conv.csv', nrows=100000)
+'''
+df_conversations = pd.read_csv('./text_data/Conversation.csv', nrows=10000)
 df_conversations = df_conversations.drop(['conversation_id', 'turn', 'intent'], axis=1)
 df_conversations_new = '<' + df_conversations['role'] + '>' +  df_conversations['message'] + '</' + df_conversations['role'] + '>\n'
+conv_list = df_conversations_new.values.flatten().tolist()
+'''
+
+#%%
+df_conversations = pd.read_csv('./text_data/Conversation.csv', nrows=10000)
+df_conversations = df_conversations.drop(['Unnamed: 0', 'question'], axis=1)
+df_conversations_new = '<user>' +  df_conversations['answer'] + '</user>\n'
 conv_list = df_conversations_new.values.flatten().tolist()
 
 #%%
@@ -32,8 +41,12 @@ conv_list_str = ''.join(conv_list)
 #%%
 with open('./text_data/final_post_training_data.txt','w', encoding='utf-8') as f:
     f.write(conv_list_str)
-#%%
 
+with open('./text_data/vocab_training.txt','w', encoding='utf-8') as f:
+    f.write(final_string)
+
+with open('./text_data/vocab_training.txt','a', encoding='utf-8') as f:
+    f.write(conv_list_str)
 
 # %%
 '''
@@ -48,31 +61,60 @@ src_post = torch.tensor([vocab_dict[x] for x in text_clean_conv])
 '''
 
 # %%
-torch.manual_seed(329846)
-device =  'cuda' if torch.cuda.is_available() else 'cpu'
 
 #later on I will use this
+special_tokens = [
+    "<pad>",
+    "<bos>",
+    "<eos>",
+    "<user>",
+    "</user>",
+    "<bot>",
+    "</bot>"
+]
 tokenizer = ByteLevelBPETokenizer()
-tokenizer.train(files= './text_data/final_post_training_data.txt',vocab_size=32000)
+tokenizer.train(files= './text_data/vocab_training.txt',vocab_size=32000, special_tokens = special_tokens)
 encoded_src = tokenizer.encode(final_string)
 encoded_src_post = tokenizer.encode(conv_list_str)
 
+
+
+# %%
+device =  'cuda' if torch.cuda.is_available() else 'cpu'
+torch.manual_seed(329846)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(329846)
+torch.set_float32_matmul_precision('high')
+context_lenght = 128
+pos_emb_lenght = 2048
+batch_count =  64
+lr = 1e-3
+vocab_size = tokenizer.get_vocab_size()
+emb_dim= 512
+head_count = 8 
+feed_forward = emb_dim * 4
+temperature = 1
 
 # %%
 src = torch.tensor(encoded_src.ids, device=device)
 src_post = torch.tensor(encoded_src_post.ids, device=device)
 
 train_size = int(src.shape[0] * 0.9)
+train_size_post = int(src_post.shape[0] * 0.9)
 src_train = src[:train_size]
 src_test = src[train_size:]
 
-src_post_train = src_post[:train_size]
-src_post_test = src_post[train_size:]
+src_post_train = src_post[:train_size_post]
+src_post_test = src_post[train_size_post:]
+print(src_post.shape)
+print(src_post_train.shape)
+print(train_size)
+print(tokenizer.decode(src_post_test[:1000].tolist()))
 # %%
 
 def decode(list_of_idxs):
 #    list_of_words = [vocab_dict_inv[x] for x in list_of_idxs]
-    text = tokenizer.decode(list_of_idxs)
+    text = tokenizer.decode(list_of_idxs, skip_special_tokens=False)
     return text
 
 def encode(list_of_words):
@@ -82,45 +124,30 @@ def encode(list_of_words):
 
 
 #%%
-context_lenght = 32 
-pos_emb_lenght = 2048
-batch_count = 128 
-lr = 1e-3
-vocab_size = tokenizer.get_vocab_size()
-emb_dim= 512
-head_count = 8 
-feed_forward = emb_dim * 4
-temperature = 1.8
-
-#%%
 def get_batches(batches_count, src_data):
-    all_starts= torch.randint(0, src_data.shape[0] - context_lenght - 1, size=(batches_count, ))
-    inputs = torch.stack([src_data[n : n + context_lenght] for n in all_starts])
-    targets = torch.stack([src_data[n + 1: n + context_lenght + 1] for n in all_starts])
+    src_usable = src_data[: src_data.shape[0] - (src_data.shape[0] % context_lenght) + 1]
+    inputs =src_usable[:-1].view(-1, context_lenght)
+    targets =src_usable[1:].view(-1, context_lenght)
+    all_starts= torch.randint(0, inputs.shape[0], size=(batches_count, ), dtype=torch.long).to(device=device)
+
+    inputs = inputs[all_starts]
+    targets = targets[all_starts]
     return inputs, targets
 
-def get_minibatch(batches, start, end):
-    return batches[start:end, :, ]
-
-def get_minibatch_pair(batches_x, batches_y, start, end):
-    x = get_minibatch(batches_x, start, end)
-    y = get_minibatch(batches_y, start, end)
-    return x, y 
-
 
 #%%
 
-inputs, targets = get_batches(batch_count, src)
+inputs, targets = get_batches(batch_count, src_post_train)
+print(inputs.shape)
 
-inputs = inputs.long().to(device)
-targets = targets.long().to(device)
+'''
 for inp, tar in zip(inputs, targets):
     n = 0
     while n < inp.shape[0]:
         print(f'For inputs: {decode(inp[:n + 1].tolist())}')
         print(f'target is:  {decode(tar[n:n+1].tolist())}')
         n+= 1
-
+'''
 #%%
 class Head(nn.Module):
     def __init__(self, input_size, head_emb_size):
@@ -200,12 +227,18 @@ class Transformer(nn.Module):
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
         )
+        self.register_buffer(
+            "pos_ids",
+            torch.arange(pos_emb_lenght)
+        )
+        
         self.ln_f = nn.LayerNorm(emb_dim)
         self.lm_head = nn.Linear(emb_dim, vocab_size)
     def forward(self, input, target = None):
         B, T = input.shape
         emb_tok = self.tok_emb(input).to(device)
-        emb_pos = self.pos_emb(torch.arange(T, device = device)).unsqueeze(0)
+        pos = self.pos_ids[:T].unsqueeze(0)
+        emb_pos = self.pos_emb(pos)
         x = emb_pos + emb_tok
         x = F.dropout(x, p=0.4, training=self.training)
         x = self.model_pipeline(x)
@@ -222,12 +255,19 @@ class Transformer(nn.Module):
 #%%
 cTransformer = Transformer().to(device=device)
 optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr)
+param_counter = 0
+#for p in cTransformer.parameters():
+#    p+= p.numel()
+
+#print(param_counter)
+
+cTransformer = torch.compile(cTransformer, backend='eager')
 
 #%%
 #cTransformer.load_state_dict(torch.load('checkpoint.pth'))
 
 #%%
-def Train(epochs, src_data_train, src_data_test):
+def Train(epochs, src_data_train, src_data_test, print_ts = False):
     losses = []
     for n in range(epochs):
         optimizer.zero_grad(set_to_none = True)
@@ -237,28 +277,37 @@ def Train(epochs, src_data_train, src_data_test):
         y, loss = cTransformer(train_x, train_y)
         loss.backward()
         optimizer.step()
-        if n % 50 == 0:
+        if n % 20 == 0:
             with torch.no_grad():
+
+                if print_ts:
+                    time_start = datetime.now().microsecond
                 test_x, test_y = get_batches(batch_count, src_data_test)
                 test_x = test_x.long().to(device)
                 test_y = test_y.long().to(device)
                 _, loss_test = cTransformer(test_x, test_y)
                 losses.append((loss, loss_test))
-                print(f'train: {n}: {loss}, test: {n}: {loss_test}')
+                output = f'train: {n}: {loss:.4f}, test: {n}: {loss_test:.4f}'
+                if print_ts:
+                    torch.cuda.synchronize()
+                    time_end = datetime.now().microsecond
+                    #ms
+                    dt = time_end - time_start 
+                    output += f', time {dt}ms'
+                print(output)
+     
         
     return losses
 
-
 #%%
 epoch_counter = 0
-losses = Train(4000, src_train, src_test)
-epoch_counter+=4000 
-
+losses = Train(1000, src_train, src_test)
+epoch_counter+=1000 
 
 
 #%%
-losses_post = Train(1000, src_post_train, src_post_test)
-epoch_counter+= 1000 
+losses_post = Train(1000, src_post_train, src_post_test, True)
+epoch_counter+= 1000
 
 #%%
 torch.save({'model': cTransformer.state_dict(),
@@ -297,19 +346,26 @@ def generate(prompt_tokens, max_size):
 
         logits, _ = cTransformer(model_in)
         last_logits = logits[:, -1, :]
-        probs = F.softmax(last_logits/temperature, dim=-1)
+        topk = torch.topk(last_logits, 50)
+        topk_logits = topk.values
+        topk_indices = topk.indices
+        probs = F.softmax(topk_logits/temperature, dim=-1)
         probs_ploted = probs.detach().cpu().clone()
-
         probs_ploted = probs_ploted.squeeze(dim=0)
-#        plt.plot(probs_ploted.tolist())
-#        plt.show()
-        next_tok = torch.multinomial(probs, 1)
+        #plt.plot(probs_ploted.tolist())
+        #plt.show()
+
+
+        next_tok = topk_indices.gather(-1, 
+                            torch.multinomial(probs, 1))
+
         seq = torch.cat((seq, next_tok), dim=1)
 
         recent = decode(seq[0, -20:].tolist())
         generated_text = decode(seq[0].tolist())
+#        print(generated_text)
 
-        if "</bot>" in recent:
+        if "</user>" in recent:
             break
 
     with open("output_file.txt", "w", encoding="utf-8") as f:
@@ -330,7 +386,6 @@ cTransformer.eval()
 
 #text = input('> ')
 cTransformer.eval()
-output = Prompt("<user>can you move a car?</user>\n")
+output = Prompt("a\n")
 print(output)
 
-# %%

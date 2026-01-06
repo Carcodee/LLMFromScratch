@@ -8,7 +8,6 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-
 # %%
 target_img_size = [28, 28]
 train_size = 0.9
@@ -139,6 +138,7 @@ class Encoder(nn.Module):
             torch.nn.Sigmoid(),
             torch.nn.Linear(128, latent_space_size),
             torch.nn.Sigmoid(),
+            torch.nn.Linear(latent_space_size, 1),
        )
     def forward(self, x):
         return self.model(x)
@@ -147,6 +147,7 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = torch.nn.Sequential(
+            torch.nn.Linear(1, latent_space_size),
             torch.nn.Linear(latent_space_size, 128),
             torch.nn.BatchNorm1d(128),
             torch.nn.ReLU(),
@@ -166,6 +167,11 @@ class AutoEncoder(nn.Module):
         super().__init__()
         self.encoder = Encoder()
         self.decoder = Decoder()
+    def encode(self, x):
+        return self.encoder(x)
+    def decode(self, x):
+        return self.decoder(x)
+
     def forward(self, x, target = None, isolate = 'none'):
         loss = None
         if isolate == 'encoder':
@@ -250,7 +256,24 @@ with torch.no_grad():
     y = get_img_from_flatten(y)
 #    plt.imshow(x_in[0], cmap='gray')
 #    plt.imshow(y_in[0], cmap='gray')
-    plt.imshow(y[100], cmap='gray')
+    plt.imshow(y[0], cmap='gray')
     print(F.mse_loss(y, y_in))
+
+# %%
+
+with torch.no_grad():
+    auto_encoder.eval()
+    data_point_x, data_point_y = get_batches(test_images_x, test_images_y, batch_size=-1, flatten=True)
+    latent_data = auto_encoder.encode(data_point_x)
+    t = torch.linspace(0, 1, 100).to(device=device)
+    t_ease = t
+    interp_latent = torch.lerp(latent_data[0], latent_data[2], t_ease[20])
+    interp_latent = interp_latent.unsqueeze(dim = 0)
+    decoded_data = auto_encoder.decode(interp_latent)
+    x_test = get_img_from_flatten(data_point_x.cpu())
+    y_test = get_img_from_flatten(data_point_y.cpu())
+    y = get_img_from_flatten(decoded_data.cpu())
+    plt.imshow(y[0], 'gray')
+
 
 # %%
