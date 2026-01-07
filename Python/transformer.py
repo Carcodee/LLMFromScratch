@@ -6,6 +6,7 @@ import pandas as pd
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers import ByteLevelBPETokenizer
+import os
 import re
 import math
 import matplotlib.pyplot as plt
@@ -16,7 +17,7 @@ from datetime import datetime
 df = pd.read_csv('./text_data/data.csv')
 df = df.drop(['Dataline','PlayerLinenumber','Play','ActSceneLine'], axis=1)
 df[['Player', 'PlayerLine']] += '\n'
-str_list = df.values.flatten().tolist()[:10000]
+str_list = df.values.flatten().tolist()
 str_list = [x for x in str_list if not (isinstance(x, float) and math.isnan(x))]
 final_string = ''.join(str_list)
 with open('./text_data/final_training_data.txt', 'w', encoding='utf-8') as f:
@@ -42,6 +43,7 @@ conv_list_str = ''.join(conv_list)
 with open('./text_data/final_post_training_data.txt','w', encoding='utf-8') as f:
     f.write(conv_list_str)
 
+#%%
 with open('./text_data/vocab_training.txt','w', encoding='utf-8') as f:
     f.write(final_string)
 
@@ -85,9 +87,9 @@ torch.manual_seed(329846)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(329846)
 torch.set_float32_matmul_precision('high')
-context_lenght = 128
-pos_emb_lenght = 2048
-batch_count =  64
+context_lenght = 32
+pos_emb_lenght = 512
+batch_count = 256
 lr = 1e-3
 vocab_size = tokenizer.get_vocab_size()
 emb_dim= 512
@@ -95,21 +97,89 @@ head_count = 8
 feed_forward = emb_dim * 4
 temperature = 1
 
+#%%
+def batchify_data(src_data):
+    src_usable = src_data[: src_data.shape[0] - (src_data.shape[0] % context_lenght) + 1]
+    inputs =src_usable[:-1].view(-1, context_lenght)
+    targets =src_usable[1:].view(-1, context_lenght)
+    return inputs, targets
+
+
+def get_batches(batches_count, input_batches, target_batches):
+    all_starts_inputs= torch.randint(0, input_batches.shape[0], size=(batches_count, ), dtype=torch.long).to(device=device)
+
+    inputs = input_batches[all_starts_inputs]
+    targets = target_batches[all_starts_inputs]
+    return inputs, targets
+
+#%%
+class DataLoader():
+    def __init__(self):
+        self.offset = 0;
+        self.curr_str = ''
+        self.batch_idx = 0;
+        pass
+
+    def SetInfo(self, doc_size, path, train_size, tokenizer):
+        self.curr_path = path
+        self.total_size = os.path.getsize(self.curr_path)
+        self.doc_size = self.total_size if doc_size == -1 else doc_size
+        self.total_documents = int(self.total_size/self.doc_size) 
+        self.train_size = train_size
+        self.tokenizer = tokenizer
+
+    def Next_doc(self):
+        with open(self.curr_path, 'rb') as f:
+            f.seek(self.offset)
+            chunk = f.read(self.doc_size)
+            self.curr_str = chunk.decode('utf-8')
+        self.doc_data = self.tokenizer.encode(self.curr_str)
+        self.offset = self.offset + self.doc_size
+        finish_file = False
+        if self.offset >= self.total_size:
+            self.offset = 0
+            finish_file = True
+        return finish_file
+
+    def BuildData(self):
+        assert(self.curr_path != '')
+        self.Next_doc()
+        self.src = torch.tensor(self.doc_data.ids, device=device)
+        batched_inputs, batched_targets = batchify_data(self.src) 
+        shuffled_idx = torch.randperm(batched_inputs.shape[0]).to(device=device)
+        batched_inputs = batched_inputs[shuffled_idx]
+        batched_targets = batched_targets[shuffled_idx]
+
+        self.batched_inputs_train = batched_inputs[:int(self.train_size * batched_inputs.shape[0])]
+        self.batched_targets_train = batched_targets[:int(self.train_size * batched_inputs.shape[0])]
+
+        self.batched_inputs_val = batched_inputs[int(self.train_size * batched_inputs.shape[0]):]
+        self.batched_targets_val = batched_targets[int(self.train_size * batched_inputs.shape[0]):]
+
+    def Next(self, batch_count):
+        final_batch_size = self.batch_idx + batch_count - self.batch_idx 
+        x_out = self.batched_inputs_train[self.batch_idx: self.batch_idx + final_batch_size, :]
+        y_out = self.batched_targets_train[self.batch_idx: self.batch_idx + final_batch_size, :]
+        self.batch_idx += final_batch_size
+        finish_doc = False
+        if self.batch_idx >= self.batched_inputs_train.shape[0]:
+            self.batch_idx = 0
+            self.BuildData()
+            finish_doc = True 
+        return x_out, y_out, finish_doc
+    def GetVal(self, batches_count):
+        return get_batches(batches_count, self.batched_inputs_val, self.batched_targets_val) 
+
+
+
 # %%
-src = torch.tensor(encoded_src.ids, device=device)
-src_post = torch.tensor(encoded_src_post.ids, device=device)
 
-train_size = int(src.shape[0] * 0.9)
-train_size_post = int(src_post.shape[0] * 0.9)
-src_train = src[:train_size]
-src_test = src[train_size:]
+dl = DataLoader()
+dl.SetInfo(-1, './text_data/final_training_data.txt', 0.9, tokenizer)
+dl.BuildData()
+print(dl.batched_inputs_train.shape)
+print(dl.batched_inputs_val.shape)
 
-src_post_train = src_post[:train_size_post]
-src_post_test = src_post[train_size_post:]
-print(src_post.shape)
-print(src_post_train.shape)
-print(train_size)
-print(tokenizer.decode(src_post_test[:1000].tolist()))
 # %%
 
 def decode(list_of_idxs):
@@ -122,32 +192,19 @@ def encode(list_of_words):
     toks = tokenizer.encode(list_of_words)
     return toks
 
-
-#%%
-def get_batches(batches_count, src_data):
-    src_usable = src_data[: src_data.shape[0] - (src_data.shape[0] % context_lenght) + 1]
-    inputs =src_usable[:-1].view(-1, context_lenght)
-    targets =src_usable[1:].view(-1, context_lenght)
-    all_starts= torch.randint(0, inputs.shape[0], size=(batches_count, ), dtype=torch.long).to(device=device)
-
-    inputs = inputs[all_starts]
-    targets = targets[all_starts]
-    return inputs, targets
-
-
 #%%
 
-inputs, targets = get_batches(batch_count, src_post_train)
+inputs, targets, _ = dl.Next(32)
 print(inputs.shape)
+print(targets.shape)
 
-'''
+
 for inp, tar in zip(inputs, targets):
     n = 0
     while n < inp.shape[0]:
         print(f'For inputs: {decode(inp[:n + 1].tolist())}')
         print(f'target is:  {decode(tar[n:n+1].tolist())}')
         n+= 1
-'''
 #%%
 class Head(nn.Module):
     def __init__(self, input_size, head_emb_size):
@@ -168,7 +225,7 @@ class Head(nn.Module):
         mask = self.mask[:T, :T]
         wei = wei.masked_fill(mask==0, float(-1e9))
         wei = F.softmax(wei, dim=2)
-        wei = F.dropout(wei, p=0.4, training=self.training)
+        wei = F.dropout(wei, p=0.1, training=self.training)
         #B, T, T @ B, T, C = B, T, C
         out = wei @ V
         return out
@@ -182,7 +239,7 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=2)
-        out = F.dropout(self.proj(out), p=0.4, training=self.training)
+        out = F.dropout(self.proj(out), p=0.1, training=self.training)
         return out
 
 
@@ -191,12 +248,11 @@ class FeedForward(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_size, input_size),
-            nn.Dropout(0.4),
+            nn.Dropout(0.1),
         )
-    #feedforward + residual connection
     def forward(self, x):
         return self.model(x)
 
@@ -207,7 +263,7 @@ class Block(nn.Module):
         self.mhatt = MultiHeadAttention(head_count, emb_dim)
         self.lyn2 = nn.LayerNorm(emb_dim)
         self.ff = FeedForward(emb_dim, feed_forward)
-        self.dropout = nn.Dropout(0.4)
+        self.dropout = nn.Dropout(0.1)
     def forward(self, x):
         x = x + self.dropout(self.mhatt(self.lyn1(x)))
         x = x + self.ff(self.lyn2(x))
@@ -222,10 +278,6 @@ class Transformer(nn.Module):
         self.model_pipeline = nn.Sequential(
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
-            Block(head_count, emb_dim),
-            Block(head_count, emb_dim),
-            Block(head_count, emb_dim),
-            Block(head_count, emb_dim),
         )
         self.register_buffer(
             "pos_ids",
@@ -234,13 +286,13 @@ class Transformer(nn.Module):
         
         self.ln_f = nn.LayerNorm(emb_dim)
         self.lm_head = nn.Linear(emb_dim, vocab_size)
-    def forward(self, input, target = None):
-        B, T = input.shape
-        emb_tok = self.tok_emb(input).to(device)
+    def forward(self, x_in, target = None):
+        B, T = x_in.shape
+        emb_tok = self.tok_emb(x_in).to(device)
         pos = self.pos_ids[:T].unsqueeze(0)
         emb_pos = self.pos_emb(pos)
         x = emb_pos + emb_tok
-        x = F.dropout(x, p=0.4, training=self.training)
+        x = F.dropout(x, p=0.1, training=self.training)
         x = self.model_pipeline(x)
         logits = self.lm_head(x)
 
@@ -254,60 +306,61 @@ class Transformer(nn.Module):
         return logits, loss 
 #%%
 cTransformer = Transformer().to(device=device)
-optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr)
+optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr, weight_decay=0.01)
 param_counter = 0
+
 #for p in cTransformer.parameters():
 #    p+= p.numel()
 
 #print(param_counter)
 
-cTransformer = torch.compile(cTransformer, backend='eager')
+#cTransformer = torch.compile(cTransformer, backend='eager')
 
 #%%
 #cTransformer.load_state_dict(torch.load('checkpoint.pth'))
 
 #%%
-def Train(epochs, src_data_train, src_data_test, print_ts = False):
+def Train(epochs, dl, print_ts = False):
+
     losses = []
     for n in range(epochs):
-        optimizer.zero_grad(set_to_none = True)
-        train_x, train_y = get_batches(batch_count, src_data_train)
-        train_x = train_x.long().to(device)
-        train_y = train_y.long().to(device)
-        y, loss = cTransformer(train_x, train_y)
-        loss.backward()
-        optimizer.step()
-        if n % 20 == 0:
-            with torch.no_grad():
+        steps_per_epoch = int(dl.batched_inputs_train.shape[0] / batch_count) - int(dl.batch_idx/batch_count)
+        print(f'Steps per epoch: {steps_per_epoch}')
+        for step in range(steps_per_epoch):
+            x_train, y_train, finish_epoch = dl.Next(batch_count)
+            optimizer.zero_grad(set_to_none = True)
+            y, loss = cTransformer(x_train, y_train)
+            loss.backward()
+            optimizer.step()
+            if n % 20 == 0 or step == 20:
+                with torch.no_grad():
+                    if print_ts:
+                        time_start = datetime.now().microsecond
+                    input_test, target_test = dl.GetVal(32)
+                    _, loss_test = cTransformer(input_test, target_test)
+                    losses.append((loss, loss_test))
+                    output = f'epoch: {n}, step: {step}/{steps_per_epoch} train: {loss:.4f}, test: {loss_test:.4f}'
+                    if print_ts:
+                        torch.cuda.synchronize()
+                        time_end = datetime.now().microsecond
+                        #ms
+                        dt = time_end - time_start 
+                        output += f', time {dt}ms'
+                    print(output)
 
-                if print_ts:
-                    time_start = datetime.now().microsecond
-                test_x, test_y = get_batches(batch_count, src_data_test)
-                test_x = test_x.long().to(device)
-                test_y = test_y.long().to(device)
-                _, loss_test = cTransformer(test_x, test_y)
-                losses.append((loss, loss_test))
-                output = f'train: {n}: {loss:.4f}, test: {n}: {loss_test:.4f}'
-                if print_ts:
-                    torch.cuda.synchronize()
-                    time_end = datetime.now().microsecond
-                    #ms
-                    dt = time_end - time_start 
-                    output += f', time {dt}ms'
-                print(output)
-     
+    
         
     return losses
 
 #%%
 epoch_counter = 0
-losses = Train(1000, src_train, src_test)
-epoch_counter+=1000 
+losses = Train(2, dl)
+epoch_counter+= 2
 
 
 #%%
-losses_post = Train(1000, src_post_train, src_post_test, True)
-epoch_counter+= 1000
+losses_post = Train(2, dl, True)
+epoch_counter+= 2 
 
 #%%
 torch.save({'model': cTransformer.state_dict(),
@@ -317,7 +370,7 @@ torch.save({'model': cTransformer.state_dict(),
 #%%
 losses_train = []
 losses_val = []
-for loss in losses_post:
+for loss in losses:
     losses_train.append(loss[0].detach().cpu().item())
     losses_val.append(loss[1].detach().cpu().item())
 
