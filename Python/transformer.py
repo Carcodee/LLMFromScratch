@@ -34,7 +34,7 @@ conv_list = df_conversations_new.values.flatten().tolist()
 #%%
 df_conversations = pd.read_csv('./text_data/Conversation.csv', nrows=10000)
 df_conversations = df_conversations.drop(['Unnamed: 0', 'question'], axis=1)
-df_conversations_new = '<user>' +  df_conversations['answer'] + '</user>\n'
+df_conversations_new = df_conversations['answer'] + '\n'
 conv_list = df_conversations_new.values.flatten().tolist()
 
 #%%
@@ -88,9 +88,9 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(329846)
 torch.set_float32_matmul_precision('high')
 context_lenght = 32
-pos_emb_lenght = 512
-batch_count = 256
-lr = 1e-3
+pos_emb_lenght = 256
+batch_count = 128 
+lr = 3e-4
 vocab_size = tokenizer.get_vocab_size()
 emb_dim= 512
 head_count = 8 
@@ -175,7 +175,7 @@ class DataLoader():
 # %%
 
 dl = DataLoader()
-dl.SetInfo(-1, './text_data/final_training_data.txt', 0.9, tokenizer)
+dl.SetInfo(-1, './text_data/final_post_training_data.txt', 0.9, tokenizer)
 dl.BuildData()
 print(dl.batched_inputs_train.shape)
 print(dl.batched_inputs_val.shape)
@@ -278,6 +278,10 @@ class Transformer(nn.Module):
         self.model_pipeline = nn.Sequential(
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
+            Block(head_count, emb_dim),
+        Block(head_count, emb_dim),
+            Block(head_count, emb_dim),
+            Block(head_count, emb_dim),
         )
         self.register_buffer(
             "pos_ids",
@@ -306,7 +310,7 @@ class Transformer(nn.Module):
         return logits, loss 
 #%%
 cTransformer = Transformer().to(device=device)
-optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr, weight_decay=0.01)
+optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr, betas= (0.9, 0.95), eps=1e-8,weight_decay=0.01)
 param_counter = 0
 
 #for p in cTransformer.parameters():
@@ -314,10 +318,10 @@ param_counter = 0
 
 #print(param_counter)
 
-#cTransformer = torch.compile(cTransformer, backend='eager')
+cTransformer = torch.compile(cTransformer, backend='eager')
 
 #%%
-#cTransformer.load_state_dict(torch.load('checkpoint.pth'))
+cTransformer.load_state_dict(torch.load('checkpoint.pth'))
 
 #%%
 def Train(epochs, dl, print_ts = False):
@@ -326,27 +330,31 @@ def Train(epochs, dl, print_ts = False):
     for n in range(epochs):
         steps_per_epoch = int(dl.batched_inputs_train.shape[0] / batch_count) - int(dl.batch_idx/batch_count)
         print(f'Steps per epoch: {steps_per_epoch}')
-        for step in range(steps_per_epoch):
+        for step in range(steps_per_epoch + 1):
             x_train, y_train, finish_epoch = dl.Next(batch_count)
             optimizer.zero_grad(set_to_none = True)
-            y, loss = cTransformer(x_train, y_train)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                y, loss = cTransformer(x_train, y_train)
             loss.backward()
+            norm = torch.nn.utils.clip_grad_norm_(cTransformer.parameters(), 1.0)
             optimizer.step()
-            if n % 20 == 0 or step == 20:
-                with torch.no_grad():
-                    if print_ts:
-                        time_start = datetime.now().microsecond
-                    input_test, target_test = dl.GetVal(32)
-                    _, loss_test = cTransformer(input_test, target_test)
-                    losses.append((loss, loss_test))
-                    output = f'epoch: {n}, step: {step}/{steps_per_epoch} train: {loss:.4f}, test: {loss_test:.4f}'
-                    if print_ts:
-                        torch.cuda.synchronize()
-                        time_end = datetime.now().microsecond
-                        #ms
-                        dt = time_end - time_start 
-                        output += f', time {dt}ms'
-                    print(output)
+            if (step % 20) == 0:
+                pass
+
+        with torch.no_grad():
+            if print_ts:
+                time_start = datetime.now().microsecond
+            input_test, target_test = dl.GetVal(32)
+            _, loss_test = cTransformer(input_test, target_test)
+            losses.append((loss, loss_test))
+            output = f'epoch: {n} | step: {step}/{steps_per_epoch} train: {loss:.4f} | test: {loss_test:.4f} | norm: {norm:.3f}'
+            if print_ts:
+                torch.cuda.synchronize()
+                time_end = datetime.now().microsecond
+                #ms
+                dt = time_end - time_start 
+                output += f', time {dt}ms'
+            print(output)
 
     
         
@@ -354,13 +362,15 @@ def Train(epochs, dl, print_ts = False):
 
 #%%
 epoch_counter = 0
-losses = Train(2, dl)
-epoch_counter+= 2
+losses = []
+losses.extend(Train(30, dl))
+epoch_counter+= 30
 
 
 #%%
-losses_post = Train(2, dl, True)
-epoch_counter+= 2 
+losses_post = []
+losses_post.extend(Train(30, dl, True))
+epoch_counter+= 30 
 
 #%%
 torch.save({'model': cTransformer.state_dict(),
@@ -370,7 +380,7 @@ torch.save({'model': cTransformer.state_dict(),
 #%%
 losses_train = []
 losses_val = []
-for loss in losses:
+for loss in losses_post:
     losses_train.append(loss[0].detach().cpu().item())
     losses_val.append(loss[1].detach().cpu().item())
 
@@ -385,7 +395,7 @@ plt.grid(True)
 plt.legend()
 plt.show()
 #%%
-torch.save(cTransformer.cpu().state_dict(), 'model.pth')
+torch.save(cTransformer.cpu().state_dict(), 'model_conv.pth')
 cTransformer.to(device)
 
 #%%
@@ -429,7 +439,7 @@ def Prompt(text):
     text = f"{text}"
     toks = encode(text)
     tokens = torch.tensor([toks.ids]).to(device)
-    return generate(tokens, 200)
+    return generate(tokens, 1000)
 
 #%%
 state = torch.load('model.pth', map_location='cuda')
@@ -439,6 +449,6 @@ cTransformer.eval()
 
 #text = input('> ')
 cTransformer.eval()
-output = Prompt("a\n")
+output = Prompt("Hello miss\n")
 print(output)
 
