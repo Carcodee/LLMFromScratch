@@ -11,6 +11,7 @@ import re
 import math
 import matplotlib.pyplot as plt
 from datetime import datetime
+import time
 
 # %%
 
@@ -96,6 +97,9 @@ emb_dim= 512
 head_count = 8 
 feed_forward = emb_dim * 4
 temperature = 1
+#debugging
+attqk_results_hook = [];
+x_input_tokens_inputs = [];
 
 #%%
 def batchify_data(src_data):
@@ -174,11 +178,6 @@ class DataLoader():
 
 # %%
 
-dl = DataLoader()
-dl.SetInfo(-1, './text_data/final_post_training_data.txt', 0.9, tokenizer)
-dl.BuildData()
-print(dl.batched_inputs_train.shape)
-print(dl.batched_inputs_val.shape)
 
 # %%
 
@@ -193,7 +192,7 @@ def encode(list_of_words):
     return toks
 
 #%%
-
+'''
 inputs, targets, _ = dl.Next(32)
 print(inputs.shape)
 print(targets.shape)
@@ -205,6 +204,7 @@ for inp, tar in zip(inputs, targets):
         print(f'For inputs: {decode(inp[:n + 1].tolist())}')
         print(f'target is:  {decode(tar[n:n+1].tolist())}')
         n+= 1
+'''
 #%%
 class Head(nn.Module):
     def __init__(self, input_size, head_emb_size):
@@ -222,6 +222,9 @@ class Head(nn.Module):
         
         #B, T, C @ B, C, T = B, T, T
         wei = Q @ torch.transpose(K, dim0=-2, dim1=-1)/self.head_emb_size**0.5
+        #debug attention weights
+        if self.training == False:
+            attqk_results_hook.append(wei.tolist())
         mask = self.mask[:T, :T]
         wei = wei.masked_fill(mask==0, float(-1e9))
         wei = F.softmax(wei, dim=2)
@@ -256,13 +259,38 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
+class LateralFeedForward(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super().__init__()
+        self.linear = nn.Linear(input_size, hidden_size)
+        self.lateral = nn.Linear(hidden_size, hidden_size)
+        self.gelu=nn.GELU()
+        self.linear_2 =nn.Linear(hidden_size, input_size)
+        self._zero_diagonal(self.linear_2)
+
+    def _zero_diagonal(self, layer):
+        with torch.no_grad():
+            W = layer.weight
+            diag = torch.arange(min(W.shape))
+            W[diag, diag] = 0
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.gelu(x)
+        with torch.no_grad():
+            self.linear_2.weight.fill_diagonal_(0)
+        return F.gelu(self.linear_2(x))
+
+
+
 class Block(nn.Module):
     def __init__(self, head_count, emb_dim):
         super().__init__()
         self.lyn1 = nn.LayerNorm(emb_dim)
         self.mhatt = MultiHeadAttention(head_count, emb_dim)
         self.lyn2 = nn.LayerNorm(emb_dim)
-        self.ff = FeedForward(emb_dim, feed_forward)
+        self.ff = LateralFeedForward(emb_dim, feed_forward)
         self.dropout = nn.Dropout(0.1)
     def forward(self, x):
         x = x + self.dropout(self.mhatt(self.lyn1(x)))
@@ -273,13 +301,14 @@ class Block(nn.Module):
 class Transformer(nn.Module):
     def __init__(self):
         super().__init__()
+
         self.tok_emb = nn.Embedding(num_embeddings=vocab_size,embedding_dim=emb_dim, padding_idx=0)
         self.pos_emb = nn.Embedding(num_embeddings=pos_emb_lenght,embedding_dim=emb_dim, padding_idx=0)
         self.model_pipeline = nn.Sequential(
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
-        Block(head_count, emb_dim),
+            Block(head_count, emb_dim),
             Block(head_count, emb_dim),
             Block(head_count, emb_dim),
         )
@@ -292,6 +321,9 @@ class Transformer(nn.Module):
         self.lm_head = nn.Linear(emb_dim, vocab_size)
     def forward(self, x_in, target = None):
         B, T = x_in.shape
+
+        if self.training == False:
+            x_input_tokens_inputs.append(x_in.tolist())
         emb_tok = self.tok_emb(x_in).to(device)
         pos = self.pos_ids[:T].unsqueeze(0)
         emb_pos = self.pos_emb(pos)
@@ -309,6 +341,13 @@ class Transformer(nn.Module):
 
         return logits, loss 
 #%%
+
+dl = DataLoader()
+dl.SetInfo(-1, './text_data/final_training_data.txt', 0.4, tokenizer)
+dl.BuildData()
+print(dl.batched_inputs_train.shape)
+print(dl.batched_inputs_val.shape)
+
 cTransformer = Transformer().to(device=device)
 optimizer = torch.optim.AdamW(cTransformer.parameters(), lr=lr, betas= (0.9, 0.95), eps=1e-8,weight_decay=0.01)
 param_counter = 0
@@ -318,10 +357,10 @@ param_counter = 0
 
 #print(param_counter)
 
-cTransformer = torch.compile(cTransformer, backend='eager')
+#cTransformer = torch.compile(cTransformer, backend='eager')
 
 #%%
-cTransformer.load_state_dict(torch.load('checkpoint.pth'))
+#cTransformer.load_state_dict(torch.load('checkpoint.pth'))
 
 #%%
 def Train(epochs, dl, print_ts = False):
@@ -360,15 +399,16 @@ def Train(epochs, dl, print_ts = False):
         
     return losses
 
+losses = []
+losses_post = []
 #%%
 epoch_counter = 0
-losses = []
 losses.extend(Train(30, dl))
-epoch_counter+= 30
+epoch_counter+= 30 
+print(losses)
 
 
 #%%
-losses_post = []
 losses_post.extend(Train(30, dl, True))
 epoch_counter+= 30 
 
@@ -380,7 +420,7 @@ torch.save({'model': cTransformer.state_dict(),
 #%%
 losses_train = []
 losses_val = []
-for loss in losses_post:
+for loss in losses:
     losses_train.append(loss[0].detach().cpu().item())
     losses_val.append(loss[1].detach().cpu().item())
 
@@ -439,7 +479,7 @@ def Prompt(text):
     text = f"{text}"
     toks = encode(text)
     tokens = torch.tensor([toks.ids]).to(device)
-    return generate(tokens, 1000)
+    return generate(tokens, 200)
 
 #%%
 state = torch.load('model.pth', map_location='cuda')
@@ -448,7 +488,44 @@ cTransformer.eval()
 #%%
 
 #text = input('> ')
+attqk_results_hook.clear()
+x_input_tokens_inputs.clear()
 cTransformer.eval()
 output = Prompt("Hello miss\n")
 print(output)
 
+
+# %%
+
+print(len(attqk_results_hook))  
+print(len(x_input_tokens_inputs))
+
+
+# %%
+data = torch.tensor(attqk_results_hook[1]).squeeze(dim=0)
+x = torch.tensor(x_input_tokens_inputs[1])
+
+
+# %%
+M = 4096
+N = 4096 
+K = 4096 
+a = torch.full((M, N), 1.0).to(device)
+b = torch.full((N, K), 2.0).to(device)
+
+start = torch.cuda.Event(enable_timing=True, blocking=True)
+end = torch.cuda.Event(enable_timing=True, blocking=True)
+start.record()
+for i in range(10):
+    c = a @ b;
+torch.cuda.synchronize()
+end.record()
+print(c)
+print(c.shape)
+ms = start.elapsed_time(end)
+print(f"ms: {ms/10.0}")
+flops = (2 * M * N * K)
+gflops = flops * 1e-9 / (ms / 1000.0)
+print(f"gflps: {gflops}")
+
+# %%
